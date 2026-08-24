@@ -43,7 +43,7 @@ def generate_table():
     figure.text(
         0.08,
         0.94,
-        "Table 3: Missing value analysis and preprocessing strategy",
+        "Missing value analysis and preprocessing strategy",
         ha="left",
         va="top",
         fontsize=15,
