@@ -705,11 +705,11 @@ The dataset-size figure and hospital summary use the cleaned local records that 
 
 | Hospital | Records | Features | Missing<br>(%) | Classes<br>Outcome |
 |---|---:|---:|---:|---:|
-| Hospital A | 10,569 | 11 | 0.00 | 2 |
-| Hospital B | 990 | 11 | 0.00 | 2 |
-| Hospital C | 1,770 | 11 | 0.00 | 2 |
+| Hospital A | 10,569 | 11 | 0.06 | 2 |
+| Hospital B | 990 | 11 | 0.02 | 2 |
+| Hospital C | 1,770 | 11 | 9.10 | 2 |
 
-`Features` counts the model input columns before one-hot encoding. `Missing (%)` is measured after the local cleaning and imputation step; identifier fields are removed before training.
+`Features` counts the model input columns before one-hot encoding. `Missing (%)` is measured across those 11 model inputs after local cleaning; `Not recorded` is treated as missing information and identifier fields are removed before training. Hospital C's 9.10% is structural missingness because `Medications` is absent from its source schema.
 
 ![Dataset size by hospital](results/global/dataset_sizes_by_hospital.png)
 
@@ -729,7 +729,7 @@ The privacy and SMOTE results table is generated from the recorded experiment su
 
 ### Hospital-level confusion matrices
 
-The current evaluation converts the four-class outcome into a binary task: `Admitted` is positive and all other outcomes are negative.
+The current evaluation converts the four-class outcome into a binary task: `Admitted` is positive and all other outcomes are negative. However, the current cleaned files contain no class-1 (`Admitted`) records; all records are class 0 (`Home`) or class 3 (unknown). Therefore, existing `Admitted`-positive performance results should not be treated as reproducible from the current cleaned data until the `Referral`/`Referred`, `Death`, and missing-outcome mapping is resolved.
 
 ![Hospital A confusion matrix](results/confusion_matrices/HospitalA_confusion_matrix.png)
 
@@ -738,6 +738,8 @@ The current evaluation converts the four-class outcome into a binary task: `Admi
 ![Hospital C confusion matrix](results/confusion_matrices/HospitalC_confusion_matrix.png)
 
 Numeric matrices are available in `results/confusion_matrices/`.
+
+The stored confusion-matrix CSVs contain `Actual Admitted` observations, whereas the current cleaned CSVs contain no class-1 (`Admitted`) records. These result artifacts therefore come from an earlier data or label state and are not reproducible from the current preprocessing outputs without first correcting the outcome mapping. They should be treated as historical results until the pipeline is rerun.
 
 ### Training dynamics
 
