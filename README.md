@@ -127,6 +127,8 @@ The resulting feature set used by clients includes:
 - `Medications`
 - `Age_bin`
 
+The current source inventory contains 15,208 raw records and 13,329 records after identifier-based deduplication: Hospital A contributes 10,569 records, Hospital B 990, and Hospital C 1,770. The final record contribution is therefore 79.29%, 7.43%, and 13.28%, respectively. The values 16,212 and 14,818 mentioned in an earlier manuscript draft do not occur in the current repository and cannot be verified against this data version.
+
 ### 4.2 Data-quality and missingness heterogeneity
 
 The raw hospital exports have different schemas and different levels of feature availability. Hospitals A and B contain 17 source columns, including five vital-sign fields, while Hospital C contains 12 source columns and does not provide those vital-sign fields. The following feature-level missingness results were calculated directly from the raw CSV files. Blank values and explicit missing-value markers (`NA`, `None`, `Unknown`, `Not recorded`, and `-`) are counted as missing.
@@ -428,10 +430,12 @@ The following before-versus-after results compare each raw hospital CSV with its
 | Duplicate records removed | 1,431 | 0 | 389 | 0 | 59 | 0 |
 | Missing values (%) | 5.76% | 0.06% | 2.59% | 0.02% | 7.95% | 9.10% |
 | Usable features | 10 | 11 | 10 | 11 | 5 | 11 |
-| Invalid values | 82 | 0 | 10 | 0 | 0 | 0 |
+| Invalid values | 82 | 82 | 10 | 10 | 0 | 0 |
 | Inconsistent categories | 23 | 0 | 11 | 0 | 5 | 0 |
 
-Preprocessing removes 1,431 records from Hospital A, 389 from Hospital B, and 59 from Hospital C because their source identifiers are duplicated. It standardises the usable model input to 11 features: `Age`, `Sponsor`, `Region`, five vital signs, `Procedures`, `Medications`, and `Age_bin`. Invalid vital-sign values are coerced and imputed, while sponsor labels are mapped to `GOVERNMENT`, `CASH`, or `PRIVATE` and outcomes are mapped to the shared numeric label space. Hospital C remains at 9.10% semantic missingness after cleaning because `Medications` is absent from its source schema and is represented as `Not recorded` for all cleaned records; this is structural missingness, not successful recovery of the missing field.
+Preprocessing removes 1,431 records from Hospital A, 389 from Hospital B, and 59 from Hospital C because their source identifiers are duplicated. It standardises the usable model input to 11 features: `Age`, `Sponsor`, `Region`, five vital signs, `Procedures`, `Medications`, and `Age_bin`. Missing or nonnumeric vital-sign values are coerced and imputed, but existing implausible numeric values are not range-filtered; consequently, the invalid-value counts remain 82 for Hospital A and 10 for Hospital B after cleaning. Sponsor labels are mapped to `GOVERNMENT`, `CASH`, or `PRIVATE`. Hospital C remains at 9.10% semantic missingness after cleaning because `Medications` is absent from its source schema and is represented as `Not recorded` for all cleaned records; this is structural missingness, not successful recovery of the missing field.
+
+After preprocessing, the outcome distributions are `Home`/class 0 = 10,553 and unknown/class 3 = 16 for Hospital A; class 0 = 978 and class 3 = 12 for Hospital B; and class 0 = 1,750 and class 3 = 20 for Hospital C. No records are currently represented as classes 1 (`Admitted`) or 2 (`Referred`), because the source files use `Referral` and `Death`, while the active mapping only recognises `Home`, `Admitted`, and `Referred`; unrecognised values are assigned class 3.
 
 ### 4.4 Outcome harmonisation
 
@@ -445,6 +449,12 @@ All institutions use the same label space:
 | Missing or unknown | 3 |
 
 The shared mapping is important because model outputs from different hospitals must represent the same clinical categories.
+
+### 4.4.1 Common target and encoded input
+
+The intended common target definition is a four-class integer outcome: `Home=0`, `Admitted=1`, `Referred=2`, and missing or unknown=`3`. In the current data, the active cleaner produces only classes 0 and 3, as described above. The final common model feature list contains 11 logical features. Numeric inputs contribute six dimensions (`Age` and five vital signs); categorical inputs are one-hot encoded for `Sponsor`, `Region`, `Procedures`, `Medications`, and `Age_bin`.
+
+The current cached encoder implementation is not deterministic across concurrent clients because whichever client fits `GLOBAL_ENCODERS` first defines the category vocabulary. If Hospital A fits first, the encoded input dimension is 3,435 (3 sponsor + 21 region + 2 procedures + 3,396 medication + 7 age-bin categories + 6 numeric dimensions). The corresponding dimensions if Hospital B or Hospital C fits first are 585 and 25. A versioned shared encoder bundle is required before reporting one final encoded dimension for a reproducible federated experiment.
 
 ### 4.5 Hashing and generalisation code
 
