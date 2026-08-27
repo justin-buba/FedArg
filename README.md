@@ -127,7 +127,19 @@ The resulting feature set used by clients includes:
 - `Medications`
 - `Age_bin`
 
-### 4.2 Detailed path from raw data to local training
+### 4.2 Data-quality and missingness heterogeneity
+
+The raw hospital exports have different schemas and different levels of feature availability. Hospitals A and B contain 17 source columns, including five vital-sign fields, while Hospital C contains 12 source columns and does not provide those vital-sign fields. The following feature-level missingness results were calculated directly from the raw CSV files. Blank values and explicit missing-value markers (`NA`, `None`, `Unknown`, `Not recorded`, and `-`) are counted as missing.
+
+| Hospital | Records | Source columns | Overall missing cells | Features with missing values |
+|---|---:|---:|---:|---:|
+| Hospital A | 12,000 | 17 | 5.76% | Pulse, Resp, Temp, Sys, Dia, Diagnoses, Procedures, Medications |
+| Hospital B | 1,379 | 17 | 2.59% | Pulse, Resp, Temp, Sys, Dia, Diagnoses, Procedures, Outcome |
+| Hospital C | 1,829 | 12 | 7.95% | Ordered Tests, Procedures, Outcome |
+
+The largest raw missingness source is `Diagnoses` for Hospital A (84.29%), `Diagnoses` for Hospital B (30.82%), and `Ordered Tests` for Hospital C (94.59%). Hospital C's missing vital-sign fields are structural missingness caused by absent source columns rather than blank cells. This demonstrates that the manuscript's feature-availability claim should distinguish unavailable columns from missing cells; the reported 14-feature/17.65% and 9-feature/47.06% values cannot be reproduced from the current CSV schemas using the cell-level definition above.
+
+### 4.2.1 Detailed path from raw data to local training
 
 The complete hospital-side path is local. A hospital starts with its own raw CSV and does not upload that file to the coordinator. The file is read by [client/data_utils.py](client/data_utils.py), transformed into a standard schema, written to `data/processed/`, cleaned by [client/clean_app.py](client/clean_app.py), and then loaded by [client/client_app.py](client/client_app.py) for model training.
 
@@ -406,7 +418,22 @@ for epoch in range(epochs):
 
 This produces the locally trained state dictionary used to initialise the hospital client. In each later Flower round, the client receives the current global parameters, trains for 30 local epochs using weighted cross-entropy, and returns the resulting model parameters after the configured privacy transformations.
 
-### 4.3 Outcome harmonisation
+### 4.3 Effects of preprocessing
+
+The following before-versus-after results compare each raw hospital CSV with its corresponding cleaned CSV. Duplicate records before cleaning are repeated source identifiers; the after value is zero because those duplicates are removed during preprocessing. Missingness before cleaning is the percentage of missing cells across the raw source columns. Missingness after cleaning is calculated across the 11 active model features and treats `Not recorded` as missing information. Invalid values are nonnumeric or implausible age/vital-sign values. Inconsistent categories are distinct raw sponsor and outcome labels outside the canonical categories used by the cleaner.
+
+| Metric | A before | A after | B before | B after | C before | C after |
+|---|---:|---:|---:|---:|---:|---:|
+| Records | 12,000 | 10,569 | 1,379 | 990 | 1,829 | 1,770 |
+| Duplicate records removed | 1,431 | 0 | 389 | 0 | 59 | 0 |
+| Missing values (%) | 5.76% | 0.06% | 2.59% | 0.02% | 7.95% | 9.10% |
+| Usable features | 10 | 11 | 10 | 11 | 5 | 11 |
+| Invalid values | 82 | 0 | 10 | 0 | 0 | 0 |
+| Inconsistent categories | 23 | 0 | 11 | 0 | 5 | 0 |
+
+Preprocessing removes 1,431 records from Hospital A, 389 from Hospital B, and 59 from Hospital C because their source identifiers are duplicated. It standardises the usable model input to 11 features: `Age`, `Sponsor`, `Region`, five vital signs, `Procedures`, `Medications`, and `Age_bin`. Invalid vital-sign values are coerced and imputed, while sponsor labels are mapped to `GOVERNMENT`, `CASH`, or `PRIVATE` and outcomes are mapped to the shared numeric label space. Hospital C remains at 9.10% semantic missingness after cleaning because `Medications` is absent from its source schema and is represented as `Not recorded` for all cleaned records; this is structural missingness, not successful recovery of the missing field.
+
+### 4.4 Outcome harmonisation
 
 All institutions use the same label space:
 
@@ -419,7 +446,7 @@ All institutions use the same label space:
 
 The shared mapping is important because model outputs from different hospitals must represent the same clinical categories.
 
-### 4.4 Hashing and generalisation code
+### 4.5 Hashing and generalisation code
 
 The project's current salted hashing routine is:
 
