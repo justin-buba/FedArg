@@ -26,13 +26,14 @@ def clean_all_data():
     columns_to_drop = ["Id", "Name", "Gender", "Date of birth", "Ward", "District", "Diagnoses"]
     vital_columns = ["Pulse", "Resp", "Temp", "Sys", "Dia"]
 
-    # Correct mapping according to raw CSV + Unknown category
+    # Correct mapping according to actual raw CSV + Unknown category
+    # Verified from source data: Home, Referral, Death present (not Admitted/Referred)
     outcome_map = {
         "Home": 0,
-        "Admitted": 1,
-        "Referred": 2
+        "Referral": 1,  # Patient referred to another facility
+        "Death": 2      # Patient died
     }
-    UNKNOWN_OUTCOME = 3  # numeric code for missing/unknown
+    UNKNOWN_OUTCOME = 3  # numeric code for missing/unknown/NaN
 
     for input_path in csv_files:
         print(f"→ Processing: {input_path.name}")

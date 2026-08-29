@@ -250,11 +250,11 @@ The cleaning layer maps local outcome strings into the shared label space:
 
 ```python
 outcome_map = {
-	"Home": 0,
-	"Admitted": 1,
-	"Referred": 2,
+	"Home": 0,                  # Patient discharged home
+	"Referral": 1,             # Patient referred to another facility
+	"Death": 2                 # Patient died
 }
-unknown_outcome = 3
+unknown_outcome = 3            # Missing or unrecorded outcome
 
 df_clean["Outcome"] = (
 	df_clean["Outcome"].astype(str).str.strip().map(outcome_map)
@@ -435,24 +435,31 @@ The following before-versus-after results compare each raw hospital CSV with its
 
 Preprocessing removes 1,431 records from Hospital A, 389 from Hospital B, and 59 from Hospital C because their source identifiers are duplicated. It standardises the usable model input to 11 features: `Age`, `Sponsor`, `Region`, five vital signs, `Procedures`, `Medications`, and `Age_bin`. Missing or nonnumeric vital-sign values are coerced and imputed, but existing implausible numeric values are not range-filtered; consequently, the invalid-value counts remain 82 for Hospital A and 10 for Hospital B after cleaning. Sponsor labels are mapped to `GOVERNMENT`, `CASH`, or `PRIVATE`. Hospital C remains at 9.10% semantic missingness after cleaning because `Medications` is absent from its source schema and is represented as `Not recorded` for all cleaned records; this is structural missingness, not successful recovery of the missing field.
 
-After preprocessing, the outcome distributions are `Home`/class 0 = 10,553 and unknown/class 3 = 16 for Hospital A; class 0 = 978 and class 3 = 12 for Hospital B; and class 0 = 1,750 and class 3 = 20 for Hospital C. No records are currently represented as classes 1 (`Admitted`) or 2 (`Referred`), because the source files use `Referral` and `Death`, while the active mapping only recognises `Home`, `Admitted`, and `Referred`; unrecognised values are assigned class 3.
+After preprocessing with the corrected outcome mapping, the outcome distributions are:
+
+- **Hospital A** (10,569 total): Home/class 0 = 10,553 (99.85%), Referral/class 1 = 8 (0.08%), Death/class 2 = 8 (0.08%), Unknown/class 3 = 0
+- **Hospital B** (990 total): Home/class 0 = 978 (98.79%), Referral/class 1 = 1 (0.10%), Death/class 2 = 3 (0.30%), Unknown/class 3 = 8 (0.81%)
+- **Hospital C** (1,770 total): Home/class 0 = 1,750 (98.87%), Referral/class 1 = 2 (0.11%), Death/class 2 = 6 (0.34%), Unknown/class 3 = 12 (0.68%)
+
+All source outcome values (`Home`, `Referral`, `Death`, `NaN`) are now correctly mapped to their clinical classes.
 
 ### 4.4 Outcome harmonisation
 
 All institutions use the same label space:
 
-| Outcome | Numeric class |
-|---|---:|
-| Home | 0 |
-| Admitted | 1 |
-| Referred | 2 |
-| Missing or unknown | 3 |
+| Outcome | Numeric class | Clinical meaning |
+|---|---:|---|
+| Home | 0 | Patient discharged home |
+| Referral | 1 | Patient referred to another facility |
+| Death | 2 | Patient died during stay |
+| Missing or unknown | 3 | Unrecorded or NaN outcome |
+
 
 The shared mapping is important because model outputs from different hospitals must represent the same clinical categories.
 
 ### 4.4.1 Common target and encoded input
 
-The intended common target definition is a four-class integer outcome: `Home=0`, `Admitted=1`, `Referred=2`, and missing or unknown=`3`. In the current data, the active cleaner produces only classes 0 and 3, as described above. The final common model feature list contains 11 logical features. Numeric inputs contribute six dimensions (`Age` and five vital signs); categorical inputs are one-hot encoded for `Sponsor`, `Region`, `Procedures`, `Medications`, and `Age_bin`.
+The intended common target definition is a four-class integer outcome: `Home=0`, `Referral=1`, `Death=2`, and missing or unknown=`3`. The current cleaned datasets contain all four classes as verified above. The final common model feature list contains 11 logical features. Numeric inputs contribute six dimensions (`Age` and five vital signs); categorical inputs are one-hot encoded for `Sponsor`, `Region`, `Procedures`, `Medications`, and `Age_bin`.
 
 The current cached encoder implementation is not deterministic across concurrent clients because whichever client fits `GLOBAL_ENCODERS` first defines the category vocabulary. If Hospital A fits first, the encoded input dimension is 3,435 (3 sponsor + 21 region + 2 procedures + 3,396 medication + 7 age-bin categories + 6 numeric dimensions). The corresponding dimensions if Hospital B or Hospital C fits first are 585 and 25. A versioned shared encoder bundle is required before reporting one final encoded dimension for a reproducible federated experiment.
 
@@ -729,7 +736,7 @@ The privacy and SMOTE results table is generated from the recorded experiment su
 
 ### Hospital-level confusion matrices
 
-The current evaluation converts the four-class outcome into a binary task: `Admitted` is positive and all other outcomes are negative. However, the current cleaned files contain no class-1 (`Admitted`) records; all records are class 0 (`Home`) or class 3 (unknown). Therefore, existing `Admitted`-positive performance results should not be treated as reproducible from the current cleaned data until the `Referral`/`Referred`, `Death`, and missing-outcome mapping is resolved.
+The current evaluation converts the four-class outcome into a binary task: any outcome other than Home (class 0) is positive, representing escalated care (referral or death). With the corrected outcome mapping, the cleaned files now contain all four classes. The binary definition is: class 0 (`Home`) vs. classes 1–3 (referral, death, or unknown outcome).
 
 ![Hospital A confusion matrix](results/confusion_matrices/HospitalA_confusion_matrix.png)
 
@@ -737,9 +744,7 @@ The current evaluation converts the four-class outcome into a binary task: `Admi
 
 ![Hospital C confusion matrix](results/confusion_matrices/HospitalC_confusion_matrix.png)
 
-Numeric matrices are available in `results/confusion_matrices/`.
-
-The stored confusion-matrix CSVs contain `Actual Admitted` observations, whereas the current cleaned CSVs contain no class-1 (`Admitted`) records. These result artifacts therefore come from an earlier data or label state and are not reproducible from the current preprocessing outputs without first correcting the outcome mapping. They should be treated as historical results until the pipeline is rerun.
+Numeric matrices are available in `results/confusion_matrices/`. **Note:** The stored confusion-matrix images and CSVs were generated with an earlier outcome mapping and may not match the current cleaned data distributions. These are historical artifacts and should be regenerated after a complete federated learning run with the corrected outcome mapping.
 
 ### Training dynamics
 

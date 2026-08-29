@@ -402,11 +402,11 @@ def to_binary(y):
     """
     Binary medical evaluation
 
-    1 = Admitted
-    0 = Discharged
+    1 = Referral/Death (referred or poor outcome)
+    0 = Home (discharged home)
     """
     
-    return (y == 1).astype(int)
+    return (y >= 1).astype(int)
 
 
 def plot_dataset_sizes_by_hospital():
@@ -463,15 +463,33 @@ def plot_sample_distribution():
     out = Path("results/global")
     out.mkdir(parents=True, exist_ok=True)
 
-    train_total = sum(v["train"] for v in HOSPITAL_STATS.values())
-    test_total = sum(v["test"] for v in HOSPITAL_STATS.values())
+    if HOSPITAL_STATS:
+        train_total = sum(v["train"] for v in HOSPITAL_STATS.values())
+        test_total = sum(v["test"] for v in HOSPITAL_STATS.values())
+    else:
+        cleaned_dir = Path("data/cleaned")
+        hospital_counts = []
+        for csv_path in sorted(cleaned_dir.glob("Hospital*.csv")):
+            df = pd.read_csv(csv_path)
+            if df.empty:
+                continue
+            n = len(df)
+            hospital_counts.append((n, int(n * 0.8), n - int(n * 0.8)))
+
+        if not hospital_counts:
+            train_total = 0
+            test_total = 0
+        else:
+            train_total = sum(train for _, train, _ in hospital_counts)
+            test_total = sum(test for _, _, test in hospital_counts)
+
     total = train_total + test_total
 
     labels = ["Training", "Testing", "Total"]
     values = [train_total, test_total, total]
 
     plt.figure(figsize=(6, 5))
-    plt.bar(labels, values)
+    plt.bar(labels, values, color="tab:blue")
     plt.xlabel("Sample Type")
     plt.ylabel("Number of Samples")
     plt.title("Sample Distribution Comparison Across Hospitals")
