@@ -41,7 +41,16 @@ def clean_all_data():
             df = pd.read_csv(input_path, low_memory=False, dtype_backend="numpy_nullable", on_bad_lines="warn")
             df_clean = df.drop(columns=[col for col in columns_to_drop if col in df.columns], errors="ignore")
 
-            # Fill missing vitals with median (or default if fully missing)
+            # ---- Vital signs cleaning with clinical range validation ----
+            # Clinically justified ranges for vital signs (adult patients)
+            vital_ranges = {
+                'Pulse': (30, 200),       # beats per minute
+                'Resp': (5, 50),          # breaths per minute
+                'Temp': (33, 43),         # degrees Celsius
+                'Sys': (50, 250),         # mmHg systolic
+                'Dia': (30, 150)          # mmHg diastolic
+            }
+
             for col in vital_columns:
                 if col in df_clean.columns:
                     df_clean[col] = pd.to_numeric(df_clean[col], errors="coerce")
@@ -52,7 +61,17 @@ def clean_all_data():
                     else:
                         fill_val = df_clean[col].median()
 
+                    # Replace missing values with median
                     df_clean[col] = df_clean[col].fillna(fill_val)
+                    
+                    # Replace implausible values (out of clinical range) with median
+                    lo, hi = vital_ranges.get(col, (-float('inf'), float('inf')))
+                    implausible_mask = (df_clean[col] < lo) | (df_clean[col] > hi)
+                    implausible_count = implausible_mask.sum()
+                    if implausible_count > 0:
+                        print(f"    ⚠️  {col}: {implausible_count} implausible values (outside range {lo}-{hi}) replaced with median {fill_val}")
+                        df_clean.loc[implausible_mask, col] = fill_val
+                    
                     df_clean[f"{col}_was_missing"] = df_clean[col].isna()
 
             # ---- Age binning with explicit Unknown category ----

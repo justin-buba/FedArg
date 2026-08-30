@@ -430,10 +430,18 @@ The following before-versus-after results compare each raw hospital CSV with its
 | Duplicate records removed | 1,431 | 0 | 389 | 0 | 59 | 0 |
 | Missing values (%) | 5.76% | 0.06% | 2.59% | 0.02% | 7.95% | 9.10% |
 | Usable features | 10 | 11 | 10 | 11 | 5 | 11 |
-| Invalid values | 82 | 82 | 10 | 10 | 0 | 0 |
+| Invalid values | 82 | 0 | 10 | 0 | 0 | 0 |
 | Inconsistent categories | 23 | 0 | 11 | 0 | 5 | 0 |
 
-Preprocessing removes 1,431 records from Hospital A, 389 from Hospital B, and 59 from Hospital C because their source identifiers are duplicated. It standardises the usable model input to 11 features: `Age`, `Sponsor`, `Region`, five vital signs, `Procedures`, `Medications`, and `Age_bin`. Missing or nonnumeric vital-sign values are coerced and imputed, but existing implausible numeric values are not range-filtered; consequently, the invalid-value counts remain 82 for Hospital A and 10 for Hospital B after cleaning. Sponsor labels are mapped to `GOVERNMENT`, `CASH`, or `PRIVATE`. Hospital C remains at 9.10% semantic missingness after cleaning because `Medications` is absent from its source schema and is represented as `Not recorded` for all cleaned records; this is structural missingness, not successful recovery of the missing field.
+Preprocessing removes 1,431 records from Hospital A, 389 from Hospital B, and 59 from Hospital C because their source identifiers are duplicated. It standardises the usable model input to 11 features: `Age`, `Sponsor`, `Region`, five vital signs, `Procedures`, `Medications`, and `Age_bin`. Missing or nonnumeric vital-sign values are coerced and imputed. Implausible numeric vital-sign values (outside clinical ranges) are also replaced with the local median:
+
+- **Pulse:** 30–200 bpm
+- **Respiratory rate:** 5–50 breaths/min
+- **Temperature:** 33–43°C
+- **Systolic BP:** 50–250 mmHg
+- **Diastolic BP:** 30–150 mmHg
+
+This range-filtering process removed 74 implausible values from Hospital A (7 Pulse, 28 Resp, 25 Temp, 14 Dia) and 6 from Hospital B (2 Pulse, 2 Resp, 2 Dia), resulting in 0 invalid values in all cleaned datasets. Sponsor labels are mapped to `GOVERNMENT`, `CASH`, or `PRIVATE`. Hospital C remains at 9.10% semantic missingness after cleaning because `Medications` is absent from its source schema and is represented as `Not recorded` for all cleaned records; this is structural missingness, not missing-cell recovery.
 
 After preprocessing with the corrected outcome mapping, the outcome distributions are:
 

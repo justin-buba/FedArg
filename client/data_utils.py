@@ -5,17 +5,46 @@ import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime
 import re
+import warnings
 
 
-# CHANGE THESE IN PRODUCTION! (use environment variables in real project)
-SALTS = {
-    'id': "tz-2025-id-salt-k9m2x7v",
-    'name': "tz-2025-name-salt-p4q8n3z",
-    'region': "tz-2025-geo-salt-v8m4q2k",
-    'district': "tz-2025-geo-salt-v8m4q2k",
-    'ward': "tz-2025-geo-salt-v8m4q2k",
-    'diagnoses': "tz-2025-dx-salt-r5t1j9w",
-}
+# ========================================================================
+# HASHING SALTS: Must be set via environment variables in production
+# ========================================================================
+# For production deployment, set these environment variables:
+#   export MWAKATOBE_SALT_ID=<random-uuid-or-strong-random-string>
+#   export MWAKATOBE_SALT_NAME=<random-uuid-or-strong-random-string>
+#   export MWAKATOBE_SALT_REGION=<random-uuid-or-strong-random-string>
+#   export MWAKATOBE_SALT_DISTRICT=<random-uuid-or-strong-random-string>
+#   export MWAKATOBE_SALT_WARD=<random-uuid-or-strong-random-string>
+#   export MWAKATOBE_SALT_DIAGNOSES=<random-uuid-or-strong-random-string>
+#
+# Or use a secret manager (e.g., AWS Secrets Manager, HashiCorp Vault, Azure Key Vault)
+# ========================================================================
+
+def _load_salts():
+    """Load hashing salts from environment variables with fallback defaults."""
+    salts = {
+        'id': os.getenv('MWAKATOBE_SALT_ID', 'dev-salt-placeholder-do-not-use-in-production'),
+        'name': os.getenv('MWAKATOBE_SALT_NAME', 'dev-salt-placeholder-do-not-use-in-production'),
+        'region': os.getenv('MWAKATOBE_SALT_REGION', 'dev-salt-placeholder-do-not-use-in-production'),
+        'district': os.getenv('MWAKATOBE_SALT_DISTRICT', 'dev-salt-placeholder-do-not-use-in-production'),
+        'ward': os.getenv('MWAKATOBE_SALT_WARD', 'dev-salt-placeholder-do-not-use-in-production'),
+        'diagnoses': os.getenv('MWAKATOBE_SALT_DIAGNOSES', 'dev-salt-placeholder-do-not-use-in-production'),
+    }
+    
+    # Warn if using development defaults
+    if any('dev-salt-placeholder' in v for v in salts.values()):
+        warnings.warn(
+            "⚠️  SECURITY WARNING: Using development salt placeholders. "
+            "For production, set environment variables: MWAKATOBE_SALT_* "
+            "with strong random values. Static salts provide only pseudonymisation, not anonymisation.",
+            category=UserWarning
+        )
+    
+    return salts
+
+SALTS = _load_salts()
 
 # Reference date for age calculation
 REFERENCE_DATE = datetime(2025, 12, 30)

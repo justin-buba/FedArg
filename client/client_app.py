@@ -607,43 +607,53 @@ def train_local_model(csv_path, num_classes, epochs=40, lr=0.001):
         print(f"Class {cls}: {cnt} samples")
 
     # =========================
-    # APPLY SAFE SMOTE HERE
+    # SPLIT FIRST (SAFER METHODOLOGY)
     # =========================
+    # Split BEFORE resampling to ensure evaluation is unbiased
+    # Synthetic samples are created only from training data
 
     X_np = X.numpy()  # convert torch tensor to numpy for SMOTE
     y_np = y.numpy()
-    counter = Counter(y_np)
+
+    input_size = X.shape[1]
+
+    class_counts = Counter(y_np)
+    stratify = y if min(class_counts.values()) >= 2 else None
+
+    X_train_np, X_test_np, y_train_np, y_test_np = train_test_split(
+        X_np, y_np, test_size=0.2, random_state=42, stratify=stratify
+    )
+
+    # =========================
+    # APPLY SMOTE ONLY TO TRAINING SET
+    # =========================
+    # This ensures test set evaluation is unbiased and includes no synthetic samples
+
+    counter = Counter(y_train_np)
     min_count = min(counter.values())
 
     if USE_SMOTE and min_count > 1:
         k_neighbors = min(min_count - 1, 5)
         smote = SMOTE(sampling_strategy='auto', random_state=42, k_neighbors=k_neighbors)
-        X_res, y_res = smote.fit_resample(X_np, y_np)
-        print("\n===== AFTER SMOTE CLASS DISTRIBUTION =====")
-        print(Counter(y_res))
+        X_train_res, y_train_res = smote.fit_resample(X_train_np, y_train_np)
+        print("\n===== AFTER SMOTE (TRAINING SET ONLY) =====")
+        print(Counter(y_train_res))
     else:
         print("⚠️ SMOTE skipped due to very small class sizes")
-        X_res, y_res = X_np, y_np
+        X_train_res, y_train_res = X_train_np, y_train_np
 
-    # convert back to torch
-    X = torch.tensor(X_res, dtype=torch.float32)
-    y = torch.tensor(y_res, dtype=torch.long)
+    # Test set remains unmodified (original data, no synthetic samples)
+    
+    # Convert back to torch
+    X_train = torch.tensor(X_train_res, dtype=torch.float32)
+    y_train = torch.tensor(y_train_res, dtype=torch.long)
+    X_test = torch.tensor(X_test_np, dtype=torch.float32)
+    y_test = torch.tensor(y_test_np, dtype=torch.long)
 
-    # =========================
-
-    input_size = X.shape[1]
-
-    class_counts = Counter(y.tolist())
-    stratify = y if min(class_counts.values()) >= 2 else None
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=stratify
-    )
-
-    print("\n===== TRAIN SET DISTRIBUTION =====")
+    print("\n===== TRAIN SET DISTRIBUTION (AFTER SMOTE) =====")
     print(Counter(y_train.tolist()))
 
-    print("\n===== TEST SET DISTRIBUTION =====")
+    print("\n===== TEST SET DISTRIBUTION (ORIGINAL, NO SYNTHETIC) =====")
     print(Counter(y_test.tolist()))
 
     model = HospitalModel(input_size, num_classes)
