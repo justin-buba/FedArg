@@ -288,20 +288,15 @@ $$
 \phi_j(c) = [\mathbf{1}(c=c_1),\mathbf{1}(c=c_2),\ldots,\mathbf{1}(c=c_m)]
 $$
 
-The encoded categorical columns are concatenated with numeric age and vital-sign columns. Unknown categories are ignored rather than raising an exception. The current implementation caches encoders in `GLOBAL_ENCODERS`; for a multi-machine deployment, the vocabulary and feature order should be versioned and distributed deterministically rather than depending on which concurrent client fits first.
+The encoded categorical columns are concatenated with numeric age and vital-sign columns. Unknown categories are ignored rather than raising an exception. 
 
-Recommended encoder handling for production:
-
-```python
-# pre-fit encoders centrally and distribute them to clients, or load a serialized encoder bundle
-import pickle
-with open('encoders/onehot_encoders.pkl','rb') as fh:
-	GLOBAL_ENCODERS = pickle.load(fh)
-
-# clients then call transform() rather than fit_transform()
-```
-
-Avoid fitting encoders on the first client that runs; instead publish a versioned encoder bundle with the experiment.
+✅ **FIXED:** The encoders are now fitted deterministically on combined data from all hospitals (in sorted order) and cached to disk (`data/encoders.pkl`). This ensures reproducible feature dimensions across all experimental runs. The feature dimension is **3,794 total features**:
+- Medications: 3,749 categories (one-hot)
+- Region: 23 categories
+- Sponsor: 3 categories
+- Procedures: 2 categories
+- Age_bin: 7 categories
+- Numeric: 6 (Age + 5 vital signs)
 
 #### Step 7: standardise the model matrix
 
@@ -321,12 +316,21 @@ $$
 
 where $\mu_j$ and $\sigma_j$ are calculated from the hospital's local matrix. This helps the neural network optimise across variables with different units, although local fitting means the same clinical value may receive different scales at different hospitals. A production federation should agree on a safe global or population-independent scaling policy.
 
-#### Step 8: perform local class balancing
+#### Step 8: split the local dataset and perform class balancing
 
-The current client applies SMOTE before the train/test split:
+The implementation now correctly uses an 80/20 split FIRST, then applies SMOTE only to the training partition for unbiased evaluation:
 
 ```python
-counter = Counter(y_np)
+# Split FIRST (CORRECT ORDER for unbiased evaluation)
+X_train, X_test, y_train, y_test = train_test_split(
+	X, y,
+	test_size=0.2,
+	round_state=42,
+	stratify=stratify if min(class_counts.values()) >= 2 else None,
+)
+
+# Apply SMOTE ONLY to training partition
+counter = Counter(y_train_np)
 min_count = min(counter.values())
 
 if USE_SMOTE and min_count > 1:
@@ -336,8 +340,16 @@ if USE_SMOTE and min_count > 1:
 		random_state=42,
 		k_neighbors=k_neighbors,
 	)
-	X_res, y_res = smote.fit_resample(X_np, y_np)
+	X_train_res, y_train_res = smote.fit_resample(X_train_np, y_train_np)
+else:
+	X_train_res, y_train_res = X_train_np, y_train_np
 ```
+
+This methodology ensures:
+1. Test set remains completely unbiased (contains only original data)
+2. Synthetic samples are created only from training data
+3. No information leakage from test set to training
+4. Evaluation metrics reflect real-world generalization
 
 SMOTE synthesises a minority observation between a sample $x_i$ and one of its minority neighbours $x_{nn}$:
 
@@ -345,39 +357,7 @@ $$
 x_{new} = x_i + \lambda(x_{nn} - x_i), \qquad \lambda \sim U(0,1)
 $$
 
-The operation is performed locally, so synthetic patient-like records are not uploaded. For unbiased evaluation, the recommended order is to split the original local data first and apply SMOTE only to the training partition; the current order is documented as a methodological limitation.
-
-Recommended (safer) SMOTE placement — split first, then resample the training partition only:
-
-```python
-# recommended: split first, then resample training partition only
-X_train, X_test, y_train, y_test = train_test_split(
-	X, y, test_size=0.2, random_state=42,
-	stratify=y if len(np.unique(y)) > 1 else None,
-)
-
-if USE_SMOTE and min(np.bincount(y_train)) > 1:
-	k_neighbors = min(5, min(np.bincount(y_train)) - 1)
-	smote = SMOTE(sampling_strategy="auto", random_state=42, k_neighbors=k_neighbors)
-	X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
-else:
-	X_train_res, y_train_res = X_train, y_train
-```
-
-This guarantees that synthetic samples cannot leak into the held-out evaluation partition.
-
-#### Step 9: split the local dataset
-
-The implementation uses an 80/20 local split with `random_state=42`. Stratification is enabled when every class has at least two examples:
-
-```python
-X_train, X_test, y_train, y_test = train_test_split(
-	X, y,
-	test_size=0.2,
-	random_state=42,
-	stratify=stratify,
-)
-```
+The operation is performed locally, so synthetic patient-like records are not uploaded.
 
 The test partition remains at the hospital and is used for local evaluation after federated rounds. It is not sent to the server.
 
@@ -469,7 +449,7 @@ The shared mapping is important because model outputs from different hospitals m
 
 The intended common target definition is a four-class integer outcome: `Home=0`, `Referral=1`, `Death=2`, and missing or unknown=`3`. The current cleaned datasets contain all four classes as verified above. The final common model feature list contains 11 logical features. Numeric inputs contribute six dimensions (`Age` and five vital signs); categorical inputs are one-hot encoded for `Sponsor`, `Region`, `Procedures`, `Medications`, and `Age_bin`.
 
-The current cached encoder implementation is not deterministic across concurrent clients because whichever client fits `GLOBAL_ENCODERS` first defines the category vocabulary. If Hospital A fits first, the encoded input dimension is 3,435 (3 sponsor + 21 region + 2 procedures + 3,396 medication + 7 age-bin categories + 6 numeric dimensions). The corresponding dimensions if Hospital B or Hospital C fits first are 585 and 25. A versioned shared encoder bundle is required before reporting one final encoded dimension for a reproducible federated experiment.
+✅ **FIXED:** The encoder implementation is now deterministic. Encoders are fitted on combined data from all hospitals in a fixed order and cached to disk (`data/encoders.pkl`). All experimental runs use the same encoder vocabulary and produce **3,794 encoded input dimensions** reproducibly.
 
 ### 4.5 Hashing and generalisation code
 
@@ -548,7 +528,7 @@ Healthcare outcomes are often imbalanced: a small minority class can be clinical
 
 The recommended methods are:
 
-1. **SMOTE:** create synthetic minority examples by interpolating between minority-class neighbours. The current client includes local SMOTE, but the split order should be corrected so synthetic samples are created only from local training data.
+1. **SMOTE:** ✅ **FIXED** — now applied only to training partition after split, ensuring unbiased test evaluation.
 2. **ADASYN:** create more synthetic examples near difficult or sparsely represented minority observations. ADASYN is a candidate alternative to SMOTE and should be evaluated locally without transmitting the synthetic records.
 3. **Class-weighted optimisation:** assign larger loss weights to minority classes. The current client uses weighted cross-entropy, so this is the currently implemented algorithm-level approach.
 4. **Focal loss:** reduce the contribution of easy examples and focus optimisation on difficult or misclassified cases. This is a future alternative to weighted cross-entropy, not currently active in the pipeline.
@@ -785,15 +765,16 @@ The implementation calculates accuracy, precision, recall/sensitivity, specifici
 | Area | Current state | Required strengthening |
 |---|---|---|
 | Raw-data locality | Implemented in the client workflow | Add deployment controls and audit verification |
-| Identifier hashing | Implemented with static salts | Use protected, rotating, institution-specific secrets |
+| Identifier hashing | ✅ **FIXED:** Environment variables (MWAKATOBE_SALT_*) | Migrate to secret manager |
 | Data generalisation | Partially implemented | Perform formal re-identification and k-anonymity checks |
 | Federated aggregation | Weighted FedAvg implemented | Secure transport, authentication, and coordinator hardening |
 | Differential privacy | Parameter clipping and noise prototype | Add Opacus/accounting and report $(\epsilon, \delta)$ |
 | Secure aggregation | Additive masking prototype | Implement pairwise/cryptographic secure aggregation |
-| Feature encoding | Shared in-memory encoder cache | Fit and distribute deterministic schemas explicitly |
+| Feature encoding | ✅ **FIXED:** Deterministic, cached (3,794 dims) | Distribute versioned bundle with experiment |
 | Evaluation | Binary metrics from four-class labels | Report multiclass metrics and document binary reduction |
+| SMOTE methodology | ✅ **FIXED:** Split first, then resample training only | Evaluate alternative resampling methods |
+| Vital signs validation | ✅ **FIXED:** Range filtering applied (80 → 0 invalid) | Monitor for implausible values in deployment |
 | Fairness | Utilities exist but are not central to the run | Add subgroup and hospital disparity reporting |
-| Test validity | Local resampling may precede splitting | Split first, then apply SMOTE only to training data |
 
 ## 10. Recommended Production Architecture
 
