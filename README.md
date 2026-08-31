@@ -4,7 +4,7 @@
 
 Mwakatobe is a multi-institutional healthcare machine-learning prototype in which Hospital A, Hospital B, and Hospital C train a shared predictive model without placing their patient-level CSV records on a central server. The system uses Flower to coordinate federated learning, PyTorch for local neural-network training, local preprocessing and anonymisation, weighted Federated Averaging (FedAvg), and experimental client-side parameter perturbation and masking.
 
-The architecture is best described as a **central-coordinator federated learning system with privacy-oriented controls**. Patient rows remain within each hospital's local data boundary during training. The coordinating server distributes the current global model and receives client model parameters, sample counts, and evaluation results. The current implementation does not yet provide a formal differential-privacy guarantee or cryptographic secure aggregation; those should be treated as planned hardening activities rather than completed security properties.
+The architecture is best described as a **central-coordinator federated learning system with privacy-oriented controls**. Patient rows remain within each hospital's local data boundary during training. The coordinating server distributes the current global model and receives client model parameters, sample counts, and evaluation results. Local training can use Opacus DP-SGD with per-sample gradient clipping, Gaussian noise, and accountant-reported privacy budgets. Cryptographic secure aggregation is not yet enabled and remains a planned hardening activity.
 
 ## 1. System Objectives and Boundaries
 
@@ -535,7 +535,7 @@ The recommended methods are:
 
 Balancing is compatible with federated learning because the resampling or loss calculation occurs inside each hospital. Synthetic records must still remain local; they must never be uploaded to the coordinator. Experiments should compare no balancing, SMOTE, ADASYN, class weighting, and focal loss using macro-F1, minority recall, balanced accuracy, and calibration, in addition to ordinary accuracy.
 
-Privacy-enhancing methods should be applied after local training has produced the outgoing update. Differential Privacy (DP) can clip a well-defined client update or per-example gradient and add calibrated noise, while Secure Multi-Party Computation (SMPC) or cryptographic secure aggregation can prevent the coordinator from inspecting an individual update. The current project contains prototype clipping/noise and masking functions, but formal DP accounting and a correct SMPC protocol remain future integration work.
+Local training uses Opacus DP-SGD by default. Opacus applies per-sample gradient clipping and calibrated Gaussian noise during optimisation, then reports the cumulative $(\epsilon, \delta)$ budget for each hospital. The resulting values are saved under `results/privacy/`. Cryptographic secure aggregation is separate from DP-SGD and is not enabled in the current legacy Flower `NumPyClient` deployment; Flower SecAgg/SecAgg+ must be configured before making that claim.
 
 ## 6. Server and Aggregation Architecture
 
@@ -544,20 +544,16 @@ The active server is in [server/server_app.py](server/server_app.py):
 ```python
 import flwr as fl
 
-class SecureFedAvg(fl.server.strategy.FedAvg):
-	def aggregate_fit(self, rnd, results, failures):
-		if not results:
-			return None, {}
-		aggregated_params, metrics = super().aggregate_fit(
-			rnd, results, failures
-		)
-		return aggregated_params, metrics
+class FederatedAveraging(fl.server.strategy.FedAvg):
+	"""Standard weighted FedAvg; secure aggregation is not enabled here."""
 
 if __name__ == "__main__":
 	fl.server.start_server(
 		server_address="127.0.0.1:9090",
 		config=fl.server.ServerConfig(num_rounds=10),
-		strategy=SecureFedAvg(),
+		strategy=FederatedAveraging(
+			on_fit_config_fn=lambda server_round: {"server_round": server_round}
+		),
 	)
 ```
 
@@ -565,7 +561,7 @@ The server performs model coordination and FedAvg aggregation. It does not recei
 
 ## 7. Privacy-Preserving Design
 
-Privacy is implemented as a layered design rather than a single algorithm. Data minimisation and generalisation reduce sensitive detail before training, federated learning keeps patient rows at the institution, update clipping and noise reduce the precision of released parameters, and masking is intended to hide individual client contributions during aggregation.
+Privacy is implemented as a layered design rather than a single algorithm. Data minimisation and generalisation reduce sensitive detail before training, federated learning keeps patient rows at the institution, and optional DP-SGD limits the influence of individual training records. Cryptographic secure aggregation is not enabled in the active server configuration.
 
 | Algorithm or control | Operation | Intended protection | Current status |
 |---|---|---|---|
@@ -574,8 +570,8 @@ Privacy is implemented as a layered design rather than a single algorithm. Data 
 | Generalisation | Replace detailed fields with broad categories | Reduces re-identification risk | Partially implemented |
 | Age binning | Convert exact ages into ranges | Reduces quasi-identifier precision | Implemented |
 | Federated learning | Train at each hospital and exchange parameters | Prevents routine central collection of patient rows | Implemented |
-| Gaussian perturbation | Clip parameters and add random noise | Reduces information exposed by updates | Prototype only |
-| Additive masking | Add a mask before upload | Intended to conceal individual updates | Prototype only |
+| Opacus DP-SGD | Per-sample clipping and Gaussian-noised gradients | Bounds individual-record influence during local training | Implemented; privacy budget logged per hospital |
+| Cryptographic secure aggregation | Mask updates so only their aggregate is revealed | Prevents coordinator inspection of an individual update | Not enabled; requires Flower SecAgg/SecAgg+ deployment |
 | TLS and authentication | Encrypt and authenticate network traffic | Protects updates in transit | Required for deployment |
 
 ### 7.1 Local data protection and raw-data non-sharing
@@ -630,45 +626,40 @@ $$
 
 where $n_k$ is the local training count. The server does not need patient rows for this calculation, although model parameters, update sizes, and metrics can still leak information.
 
-### 7.5 Algorithm 4: parameter clipping and Gaussian noise
+### 7.5 Algorithm 4: DP-SGD with privacy accounting
 
 ```python
-def clip_and_add_noise(params, C=5.0, sigma=DP_SIGMA):
-	dp_params = []
-	for parameter in params:
-		norm = np.linalg.norm(parameter)
-		clipped = parameter * min(1.0, C / (norm + 1e-8))
-		noise = np.random.normal(0, sigma, clipped.shape)
-		dp_params.append(clipped + noise)
-	return dp_params
+privacy_engine = PrivacyEngine(accountant="rdp")
+model, optimizer, train_loader = privacy_engine.make_private(
+	module=model,
+	optimizer=optimizer,
+	data_loader=train_loader,
+	noise_multiplier=DP_NOISE_MULTIPLIER,
+	max_grad_norm=DP_MAX_GRAD_NORM,
+)
+
+epsilon = privacy_engine.get_epsilon(DP_DELTA)
 ```
 
-For tensor $w$ and clipping threshold $C$:
+For each per-sample gradient $g_i$ and clipping threshold $C$:
 
 $$
-\mathrm{clip}(w,C) = w\min\left(1, \frac{C}{||w||_2 + 10^{-8}}\right)
+\bar{g}_i = g_i\min\left(1, \frac{C}{||g_i||_2 + 10^{-8}}\right)
 $$
 
-The released tensor is:
+The noisy batch gradient is:
 
 $$
-	ilde{w} = \mathrm{clip}(w,C) + z, \qquad z \sim \mathcal{N}(0,\sigma^2I)
+	ilde{g} = \frac{1}{B}\left(\sum_{i=1}^{B}\bar{g}_i + \mathcal{N}(0,\sigma^2C^2I)\right)
 $$
 
-The code uses `C = 5.0` and `DP_SIGMA = 0.002` when enabled. This is not sufficient to claim formal differential privacy because the implementation does not define update sensitivity, use per-example gradient clipping, or calculate an accountant-derived $(\epsilon, \delta)$. Opacus is listed as a dependency, but the active path does not use a `PrivacyEngine` or privacy accountant.
+The active path uses Opacus `PrivacyEngine(accountant="rdp")`, Poisson-sampled minibatches, per-sample clipping, and Gaussian noise. Default values are `MWAKATOBE_DP_NOISE_MULTIPLIER=1.1`, `MWAKATOBE_DP_MAX_GRAD_NORM=1.0`, and `MWAKATOBE_DP_DELTA=1e-5`; each client writes its measured epsilon to `results/privacy/<hospital>_privacy_budget.csv`. The reported $(\epsilon, \delta)$ guarantee is valid only under Opacus' sampling and threat-model assumptions and must be reported with the run configuration.
 
-### 7.6 Algorithm 5: additive masking and secure aggregation
+### 7.6 Cryptographic secure aggregation status
 
-```python
-def generate_mask(params, seed, scale=1e-3):
-	rng = np.random.default_rng(seed)
-	return [rng.normal(0, scale, p.shape) for p in params]
+The prior custom additive-mask prototype is disabled. It did not provide cryptographic secure aggregation because it did not use authenticated key exchange, pairwise complementary masks, or dropout recovery. The active server therefore performs standard weighted FedAvg and must not be described as secure aggregation.
 
-def apply_mask(params, masks):
-	return [p + mask for p, mask in zip(params, masks)]
-```
-
-For true additive secure aggregation, clients need masks $r_k$ satisfying:
+For a future true additive secure-aggregation deployment, clients need masks $r_k$ satisfying:
 
 $$
 \sum_{k=1}^{K}r_k = 0
@@ -680,7 +671,7 @@ $$
 \sum_{k=1}^{K}(w_k+r_k)=\sum_{k=1}^{K}w_k
 $$
 
-The current clients use the same round seed, so they generate the same mask rather than complementary masks. The average mask therefore remains in the aggregate and may corrupt the global model. Production secure aggregation requires pairwise masks or a vetted cryptographic protocol, authenticated key exchange, dropout recovery, minimum-participant thresholds, and controlled unmasking.
+Production secure aggregation requires a vetted protocol such as Flower SecAgg/SecAgg+, authenticated key exchange, dropout recovery, minimum-participant thresholds, and controlled unmasking. Until it is deployed and tested, the coordinator can inspect individual model updates.
 
 ### 7.7 Privacy threat model and residual risks
 
@@ -768,8 +759,8 @@ The implementation calculates accuracy, precision, recall/sensitivity, specifici
 | Identifier hashing | ✅ **FIXED:** Environment variables (MWAKATOBE_SALT_*) | Migrate to secret manager |
 | Data generalisation | Partially implemented | Perform formal re-identification and k-anonymity checks |
 | Federated aggregation | Weighted FedAvg implemented | Secure transport, authentication, and coordinator hardening |
-| Differential privacy | Parameter clipping and noise prototype | Add Opacus/accounting and report $(\epsilon, \delta)$ |
-| Secure aggregation | Additive masking prototype | Implement pairwise/cryptographic secure aggregation |
+| Differential privacy | Opacus DP-SGD with accountant-reported budgets | Validate settings and publish per-run $(\epsilon, \delta)$ |
+| Secure aggregation | Not enabled | Deploy Flower SecAgg/SecAgg+ with dropout handling |
 | Feature encoding | ✅ **FIXED:** Deterministic, cached (3,794 dims) | Distribute versioned bundle with experiment |
 | Evaluation | Binary metrics from four-class labels | Report multiclass metrics and document binary reduction |
 | SMOTE methodology | ✅ **FIXED:** Split first, then resample training only | Evaluate alternative resampling methods |
@@ -782,8 +773,8 @@ The implementation calculates accuracy, precision, recall/sensitivity, specifici
 2. Use TLS, certificate-based client authentication, and server authorization.
 3. Remove static salts and store secrets in a managed vault.
 4. Distribute a versioned encoder vocabulary and feature order.
-5. Use formal DP accounting and publish privacy budgets.
-6. Implement pairwise or cryptographic secure aggregation with dropout handling.
+5. Validate Opacus DP-SGD settings and publish privacy budgets.
+6. Deploy Flower SecAgg/SecAgg+ with dropout handling.
 7. Add client validation, anomaly detection, and robust aggregation.
 8. Keep an untouched local test partition and apply SMOTE only after splitting.
 9. Calculate subgroup recall, false-positive rate, demographic parity, and equal opportunity.
@@ -829,4 +820,4 @@ The exact dependencies are listed in [requirements.txt](requirements.txt). Befor
 
 Mwakatobe establishes the main architectural pattern required for privacy-conscious multi-institutional healthcare learning: data stays at the hospital, local clients train a common model, and a coordinator aggregates model information rather than patient rows. The project also includes preprocessing, anonymisation, imbalance handling, hospital-level evaluation, fairness utilities, and result visualisation.
 
-The current system should be presented as a research prototype. Its core federated workflow is operational, while formal differential privacy and secure aggregation remain engineering and validation tasks. This distinction separates the demonstrated data-locality benefit from privacy guarantees that require additional cryptographic implementation, accounting, and empirical validation.
+The current system should be presented as a research prototype. Its core federated workflow and accountant-tracked DP-SGD path are operational. Cryptographic secure aggregation, independent privacy validation, and deployment controls remain engineering tasks. This distinction separates the demonstrated data-locality and DP-SGD configuration from privacy guarantees requiring additional cryptographic implementation and operational validation.

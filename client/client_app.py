@@ -17,9 +17,6 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 
 from opacus import PrivacyEngine
-from opacus.validators import ModuleValidator
-
-
 from pathlib import Path
 from sklearn import metrics
 from collections import Counter
@@ -29,6 +26,7 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from torch.utils.data import DataLoader, TensorDataset
 
 
 def env_flag(name, default):
@@ -37,12 +35,14 @@ def env_flag(name, default):
 
 
 USE_DP = env_flag("MWAKATOBE_USE_DP", True)
-USE_SMPC = env_flag("MWAKATOBE_USE_SMPC", True)
+USE_SMPC = env_flag("MWAKATOBE_USE_SMPC", False)
 USE_SMOTE = env_flag("MWAKATOBE_USE_SMOTE", True)
 RESULTS_ONLY = env_flag("MWAKATOBE_RESULTS_ONLY", False)
 
-# experiment parameter
-DP_SIGMA = 0.002  # noise scale for differential privacy
+DP_NOISE_MULTIPLIER = float(os.getenv("MWAKATOBE_DP_NOISE_MULTIPLIER", "1.1"))
+DP_MAX_GRAD_NORM = float(os.getenv("MWAKATOBE_DP_MAX_GRAD_NORM", "1.0"))
+DP_DELTA = float(os.getenv("MWAKATOBE_DP_DELTA", "1e-5"))
+DP_BATCH_SIZE = int(os.getenv("MWAKATOBE_DP_BATCH_SIZE", "256"))
 
 # =====================================================
 # GLOBAL ENCODERS (CRITICAL FOR FEDERATED LEARNING)
@@ -238,11 +238,11 @@ class HospitalModel(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_size, 128),
-            nn.BatchNorm1d(128),
+            nn.LayerNorm(128),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
+            nn.LayerNorm(64),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(64, num_classes)
@@ -293,37 +293,6 @@ def compute_metrics(y_true, y_pred):
         "FPR": fpr * 100,
         "FNR": fnr * 100
     }
-
-
-# ==============================
-# DIFFERENTIAL PRIVACY UTILITIES
-# ==============================
-def clip_and_add_noise(params, C=5.0, sigma=DP_SIGMA):
-    """
-    Implements:
-    Δ_i^t = clip(Δ_i^t, C) + N(0, σ²I)
-    """
-    dp_params = []
-
-    for p in params:
-        norm = np.linalg.norm(p)
-        clipped = p * min(1.0, C / (norm + 1e-8))
-        noise = np.random.normal(0, sigma, clipped.shape)
-        dp_params.append(clipped + noise)
-
-    return dp_params
-
-
-# ==============================
-# SMPC UTILITIES (SECURE AGG)
-# ==============================
-def generate_mask(params, seed, scale=1e-3):
-    rng = np.random.default_rng(seed)
-    return [rng.normal(0, scale, p.shape) for p in params]
-
-
-def apply_mask(params, masks):
-    return [p + m for p, m in zip(params, masks)]
 
 
 # -------------------------------
@@ -657,27 +626,6 @@ def train_local_model(csv_path, num_classes, epochs=40, lr=0.001):
     print(Counter(y_test.tolist()))
 
     model = HospitalModel(input_size, num_classes)
-
-    counts = torch.bincount(y_train, minlength=num_classes).float()
-    weights = 1.0 / (counts + 1e-6)
-    weights = weights / weights.sum() * num_classes
-
-    criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=0.05)
-    optimizer = optim.Adam(model.parameters(), lr=0.0005)
-
-    for epoch in range(epochs):
-        model.train()
-        optimizer.zero_grad()
-        out = model(X_train)
-        loss = criterion(out, y_train)
-        loss.backward()
-        optimizer.step()
-
-        pred = out.argmax(dim=1)
-        acc = (pred == y_train).float().mean().item()
-
-        print(f"[LOCAL] {epoch+1}/{epochs} Loss={loss.item():.4f} Acc={acc:.4f}")
-
     return model.state_dict(), X_train, y_train, X_test, y_test
 
 # -------------------------------
@@ -726,6 +674,29 @@ class FlowerHospitalClient(fl.client.NumPyClient): # type: ignore
         # ---- Model ----
         self.model = HospitalModel(self.X_train.shape[1], self.num_classes)
         self.model.load_state_dict(state)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+        self.train_loader = DataLoader(
+            TensorDataset(self.X_train, self.y_train),
+            batch_size=min(DP_BATCH_SIZE, len(self.X_train)),
+            shuffle=True,
+        )
+        self.privacy_engine = None
+
+        if USE_SMPC:
+            raise RuntimeError(
+                "MWAKATOBE_USE_SMPC is not supported by this legacy NumPyClient path. "
+                "Configure Flower SecAgg/SecAgg+ before enabling secure aggregation."
+            )
+
+        if USE_DP:
+            self.privacy_engine = PrivacyEngine(accountant="rdp")
+            self.model, self.optimizer, self.train_loader = self.privacy_engine.make_private(
+                module=self.model,
+                optimizer=self.optimizer,
+                data_loader=self.train_loader,
+                noise_multiplier=DP_NOISE_MULTIPLIER,
+                max_grad_norm=DP_MAX_GRAD_NORM,
+            )
 
     def get_parameters(self, config=None):
         return [v.cpu().numpy() for v in self.model.state_dict().values()]
@@ -739,28 +710,33 @@ class FlowerHospitalClient(fl.client.NumPyClient): # type: ignore
         self.set_parameters(params)
 
         criterion = nn.CrossEntropyLoss(weight=self.class_weights)
-        optimizer = optim.Adam(self.model.parameters(), lr=0.001)
 
         # Federated round number (from server if available)
         round_num = config.get("server_round", "?")
 
         for epoch in range(1, 31):  # LOCAL EPOCHS
             self.model.train()
-            optimizer.zero_grad()
+            total_loss = 0.0
+            total_correct = 0
+            total_examples = 0
 
-            out = self.model(self.X_train)
-            loss = criterion(out, self.y_train)
-            loss.backward()
-            optimizer.step()
+            for X_batch, y_batch in self.train_loader:
+                self.optimizer.zero_grad()
+                out = self.model(X_batch)
+                loss = criterion(out, y_batch)
+                loss.backward()
+                self.optimizer.step()
+                total_loss += loss.item() * len(y_batch)
+                total_correct += (out.argmax(dim=1) == y_batch).sum().item()
+                total_examples += len(y_batch)
 
-            _, pred = torch.max(out, 1)
-            probs = torch.softmax(out, dim=1)
-            acc = (pred == self.y_train).float().mean().item() * 100
+            loss_value = total_loss / total_examples
+            acc = total_correct / total_examples * 100
 
             # ---- EPOCH-WISE LOGGING ----
             hist = HOSPITAL_EPOCH_HISTORY[self.hospital_name]
             hist["epoch"].append(epoch)
-            hist["loss"].append(loss.item())
+            hist["loss"].append(loss_value)
             hist["accuracy"].append(acc)
 
             # ---- 🔥 CONSOLE OUTPUT (THIS IS WHAT YOU WANT) ----
@@ -769,20 +745,31 @@ class FlowerHospitalClient(fl.client.NumPyClient): # type: ignore
                 "round": round_num,
                 "epoch": epoch,
                 "accuracy": acc,
-                "loss": loss.item()
+                "loss": loss_value
             })
-    
-        params = self.get_parameters()
 
-        if USE_DP:
-            params = clip_and_add_noise(params, C=5.0, sigma=DP_SIGMA)
+        privacy_metrics = {}
+        if self.privacy_engine is not None:
+            epsilon = self.privacy_engine.get_epsilon(DP_DELTA)
+            privacy_metrics = {"dp_epsilon": epsilon, "dp_delta": DP_DELTA}
+            privacy_dir = Path("results/privacy")
+            privacy_dir.mkdir(parents=True, exist_ok=True)
+            privacy_path = privacy_dir / f"{self.hospital_name}_privacy_budget.csv"
+            pd.DataFrame([{
+                "hospital": self.hospital_name,
+                "round": round_num,
+                "epsilon": epsilon,
+                "delta": DP_DELTA,
+                "noise_multiplier": DP_NOISE_MULTIPLIER,
+                "max_grad_norm": DP_MAX_GRAD_NORM,
+            }]).to_csv(
+                privacy_path,
+                mode="a",
+                header=not privacy_path.exists(),
+                index=False,
+            )
 
-        if USE_SMPC:
-            round_seed = int(config.get("server_round", 0))
-            masks = generate_mask(params, seed=round_seed)
-            params = apply_mask(params, masks)
-
-        return params, len(self.X_train), {}
+        return self.get_parameters(), len(self.X_train), privacy_metrics
 
 
     def evaluate(self, params, config):
