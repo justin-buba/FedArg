@@ -6,6 +6,9 @@ from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime
 import re
 import warnings
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # ========================================================================
