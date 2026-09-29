@@ -413,6 +413,16 @@ The following before-versus-after results compare each raw hospital CSV with its
 | Invalid values | 82 | 0 | 10 | 0 | 0 | 0 |
 | Inconsistent categories | 23 | 0 | 11 | 0 | 5 | 0 |
 
+#### Interpreting Hospital C's post-processing missingness
+
+Hospital C's reported missingness increases from 7.95% before preprocessing to 9.10% after preprocessing because the two percentages use different definitions and denominators. The before value is calculated over cells in Hospital C's original source columns, while the after value is calculated over the 11 harmonised model features. The after calculation treats `Not recorded` as missing information.
+
+Hospital C does not provide the five vital-sign fields (`Pulse`, `Resp`, `Temp`, `Sys`, and `Dia`) in its source schema. During cleaning, however, those fields are created in the common representation and filled with documented clinical defaults when an entire column is absent. They therefore do not account for the 9.10% post-processing value. The remaining structural gap is `Medications`: because Hospital C has no source Medications column, it is represented as `Not recorded` for every record and counted as one missing feature out of 11:
+
+`1 / 11 = 9.09%`, reported as approximately `9.10%` after rounding.
+
+Therefore, the increase should not be interpreted as preprocessing making Hospital C's data quality worse. It reflects structural missingness exposed by harmonisation and the use of a common 11-feature representation. For reporting, this measure can be described as **semantic missingness after harmonisation** to distinguish it from raw source-cell missingness.
+
 Preprocessing removes 1,431 records from Hospital A, 389 from Hospital B, and 59 from Hospital C because their source identifiers are duplicated. It standardises the usable model input to 11 features: `Age`, `Sponsor`, `Region`, five vital signs, `Procedures`, `Medications`, and `Age_bin`. Missing or nonnumeric vital-sign values are coerced and imputed. Implausible numeric vital-sign values (outside clinical ranges) are also replaced with the local median:
 
 - **Pulse:** 30–200 bpm
