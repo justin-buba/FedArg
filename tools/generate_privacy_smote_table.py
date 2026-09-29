@@ -25,6 +25,7 @@ def add_table(axis, title, columns, rows, bbox):
         cellLoc="center",
         loc="center",
         bbox=bbox,
+        colWidths=[0.20, 0.1333, 0.1333, 0.1333, 0.1333, 0.1333, 0.1333],
     )
     table.auto_set_font_size(False)
     table.set_fontsize(8)
@@ -45,7 +46,6 @@ def generate_table():
         "baseline": COMPARISON_DIR / "baseline_smote.csv",
         "dp_only": COMPARISON_DIR / "dp_only_smote.csv",
         "dp_smpc_smote": COMPARISON_DIR / "dp_smpc_smote.csv",
-        "dp_smpc_no_smote": COMPARISON_DIR / "dp_smpc_no_smote.csv",
     }
 
     summaries = {}
@@ -65,7 +65,7 @@ def generate_table():
         for name, summary in summaries.items()
     }
 
-    figure, axis = plt.subplots(figsize=(13, 7))
+    figure, axis = plt.subplots(figsize=(13, 5))
     axis.axis("off")
     figure.text(
         0.05,
@@ -92,20 +92,9 @@ def generate_table():
         [
             ["Baseline FL", *values["baseline"]],
             ["FL + DP only", *values["dp_only"]],
-            ["FL + DP + SMPC", *values["dp_smpc_smote"]],
+            ["FL + DP + SMPC + SMOTE", *values["dp_smpc_smote"]],
         ],
-        [0.03, 0.50, 0.94, 0.26],
-    )
-
-    add_table(
-        axis,
-        "SMOTE configuration",
-        ["Setup", "Accuracy", "Precision", "Recall", "F1", "FPR", "FNR"],
-        [
-            ["Before SMOTE", *values["dp_smpc_no_smote"]],
-            ["After SMOTE", *values["dp_smpc_smote"]],
-        ],
-        [0.03, 0.14, 0.94, 0.22],
+        [0.03, 0.28, 0.94, 0.48],
     )
 
     figure.savefig(OUTPUT_PATH, dpi=300, bbox_inches="tight")
