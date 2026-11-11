@@ -4,6 +4,22 @@
 >
 > Source code is the evidence for implementation statements below. Where this document and older project prose differ, verify the current source, runtime configuration, and experiment records before relying on either.
 
+## Privacy flow diagram
+
+![FedAfya privacy-related data and update flow](./FedAfya_Privacy_Flow_Diagram.png)
+
+**Figure note:** This diagram summarizes the inspected repository behavior. It distinguishes local file processing and DP accounting from client/server payloads, and calls out that the current localhost experiment does not establish physical hospital-local deployment, secure aggregation, or encrypted transport.
+
+## Privacy controls diagram
+
+![FedAfya privacy controls](./FedAfya_Privacy_Controls_Diagram.png)
+
+## Privacy controls workflow
+
+![Conceptual grouping of FedAfya privacy controls](./FedAfya_Privacy_Controls_Flow.png)
+
+**Figure note:** This is a conceptual workflow, not a claim that every shown control is active in the current implementation. In particular, secure aggregation is not enabled in the inspected code.
+
 ## 1. Privacy-control inventory
 
 | Control | Code location | Observed status | Important limitation |
